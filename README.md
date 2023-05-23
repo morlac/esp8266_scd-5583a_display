@@ -2,27 +2,26 @@
 
 == ESP8266 - NodeMCU3 pinout ==
 
-|   ESP  |   scd5583  |   i2c  |
-| signal |   signal   | signal |
-| ------:| ----------:| ------:|
-|  /RST  | 1 2: /RST  |        |
-|        |            |        |
-|   D1   |            |   SCL  |
-|   D2   |            |   SDA  |
-|        |            |        |
-|        |    [..]    |        |
-|        |            |        |
-|        |     V1:    |        |
-|   D5   | 1 2: DATA  |        |
-|   D6   | 1 2: SDCLK |        |
-|   D7   | 1  : /LOAD |        |
-|   D8   |   2: /LOAD |        |
-|        |            |        |
-|        |     V2:    |        |
-|   D5   |   2: /LOAD |        |
-|   D6   | 1 2: SDCLK |        |
-|   D7   | 1 2: DATA  |        |
-|   D8   | 1  : /LOAD |        |
+| ESP signal | scd5583 signal | i2c signal |
+| ---------- | -------------- | ---------- |
+|    /RST    |   1 2: /RST    |            |
+|            |                |            |
+|     D1     |                |     SCL    |
+|     D2     |                |     SDA    |
+|            |                |            |
+|            |      [..]      |            |
+|            |                |            |
+|            |       V1:      |            |
+|     D5     |   1 2: DATA    |            |
+|     D6     |   1 2: SDCLK   |            |
+|     D7     |   1  : /LOAD   |            |
+|     D8     |     2: /LOAD   |            |
+|            |                |            |
+|            |       V2:      |            |
+|     D5     |     2: /LOAD   |            |
+|     D6     |   1 2: SDCLK   |            |
+|     D7     |   1 2: DATA    |            |
+|     D8     |   1  : /LOAD   |            |
 
 == scd5583a - pinout ==
 
