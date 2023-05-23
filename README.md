@@ -25,19 +25,21 @@
 
 == scd5583a - pinout ==
 
-  1 - SDCLK        GND - 28
-  2 - /LOAD       DATA - 27
-  3 - nc            nc - 26
-  4 - nc            nc - 25
-  5 - nc            nc - 24
-  6 - nc            nc - 23
-  7 - nc            nc - 22
-  8 - nc            nc - 21
-  9 - nc            nc - 20
- 10 - nc           VCC - 19
- 11 - nc            na - 18
- 12 - nc            nc - 17
- 13 - /RST     /CLKSEL - 16
- 14 - GND      CLK I/O - 15
+| pin | signal | - |  signal | pin |
+| ---:|:------ | - | -------:|:--- |
+|   1 | SDCLK  |   |     GND |  28 |
+|   2 | /LOAD  |   |    DATA |  27 |
+|   3 | nc     |   |      nc |  26 |
+|   4 | nc     |   |      nc |  25 |
+|   5 | nc     |   |      nc |  24 |
+|   6 | nc     |   |      nc |  23 |
+|   7 | nc     |   |      nc |  22 |
+|   8 | nc     |   |      nc |  21 |
+|   9 | nc     |   |      nc |  20 |
+|  10 | nc     |   |     VCC |  19 |
+|  11 | nc     |   |      na |  18 |
+|  12 | nc     |   |      nc |  17 |
+|  13 | /RST   |   | /CLKSEL |  16 |
+|  14 | GND    |   | CLK I/O |  15 |
 
 
