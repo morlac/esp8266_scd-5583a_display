@@ -2,6 +2,9 @@
  * 
  * partly inspired by and copied from: https://fipsok.de/Projekt/esp8266-ntp-zeit
  */
+
+#include <FS.h> // MUST be first as otherwise things get screwd up
+
 #include <Arduino.h>
 #include <Streaming.h>
 
@@ -12,6 +15,23 @@
 #include <ESP8266WebServer.h>
 #include <WiFiManager.h>         //https://github.com/tzapu/WiFiManager
 #define SERIAL_BAUDRATE 115200
+
+
+//#define MQTT_MAX_PACKET_SIZE 512 // https://pubsubclient.knolleary.net/api#configoptions
+
+#include <ArduinoHA.h>
+#include <ESP8266WiFi.h>
+
+WiFiClient client;
+HADevice device;
+char device_name[20] = {0};
+HAMqtt mqtt(client, device);
+
+HASensorNumber HA_Temp("T", HASensorNumber::PrecisionP2);
+HASensorNumber HA_Humidity("H", HASensorNumber::PrecisionP3);
+HASensorNumber HA_Pressure("P", HASensorNumber::PrecisionP0);
+
+// TODO: add switches to en/disable reporting of sensordata
 
 #include <SCD5583.hpp>
 
@@ -31,6 +51,35 @@ SCD5583 scd2(LOAD_PIN_2, DATA_PIN, CLK_PIN);
 #include <TinyBME280.h>
 
 tiny::BME280 bme;
+
+#include <LittleFS.h>
+FS* filesystem =      &LittleFS;
+#define FileFS        LittleFS
+#define FS_Name       "LittleFS"
+
+#include <ArduinoJson.h>          //https://github.com/bblanchon/ArduinoJson
+
+const char* configFileName = "/config.json";
+
+// From v1.1.1
+// You only need to format the filesystem once
+//#define FORMAT_FILESYSTEM       true
+#define FORMAT_FILESYSTEM         false
+
+char mqtt_server[40] = {0};
+char mqtt_port[6] = "1883";
+char mqtt_user[20] = {0};
+char mqtt_pass[20] = {0};
+
+//flag for saving data
+bool shouldSaveConfig = false;
+
+//callback notifying us of the need to save config
+void saveConfigCallback () {
+  Serial << F("Should save config") << endl;
+
+  shouldSaveConfig = true;
+}
 
 #include <time.h>
 struct tm tm;         // http://www.cplusplus.com/reference/ctime/tm/
@@ -83,7 +132,19 @@ void SCD5583_fadeout(SCD5583 scd, uint16_t fade_duration) {
 /**
  * 
  */
-void setup() {
+void onMqttConnected() {
+  Serial << ("Connected to the broker!") << endl;
+
+    // You can subscribe to custom topic if you need
+    //mqtt.subscribe("myCustomTopic");
+}
+
+/**
+ * 
+ */
+void setup(void) {
+  Serial.begin(SERIAL_BAUDRATE);
+  
   {
     scd1.clearMatrix();
     scd1.setBrightness(BRIGHTNESS);
@@ -92,7 +153,58 @@ void setup() {
     scd2.setBrightness(BRIGHTNESS);
   }
 
-  Serial.begin(SERIAL_BAUDRATE);
+  if (FORMAT_FILESYSTEM) {
+    FileFS.format();
+  }
+
+  //read configuration from FS json
+  Serial << F("mounting FS...") << endl;
+
+  if (FileFS.begin()) {
+    Serial << F("mounted file system") << endl;
+    
+    if (FileFS.exists(configFileName)) {
+      //file exists, reading and loading
+      Serial << F("reading config file") << endl;
+      
+      File configFile = FileFS.open(configFileName, "r");
+      
+      if (configFile) {
+        Serial << F("opened config file") << endl;
+        size_t size = configFile.size();
+
+        // Allocate a buffer to store contents of the file.
+        std::unique_ptr<char[]> buf(new char[size]);
+
+        configFile.readBytes(buf.get(), size);
+
+#if ARDUINOJSON_VERSION_MAJOR >= 6
+        DynamicJsonDocument json(1024);
+        auto deserializeError = deserializeJson(json, buf.get());
+        serializeJson(json, Serial);
+        if ( ! deserializeError ) {
+#else
+        DynamicJsonBuffer jsonBuffer;
+        JsonObject& json = jsonBuffer.parseObject(buf.get());
+        json.printTo(Serial);
+        if (json.success()) {
+#endif
+          Serial << endl << F("parsed json") << endl;
+
+          strcpy(mqtt_server, json["mqtt_server"]);
+          strcpy(mqtt_port, json["mqtt_port"]);
+          strcpy(mqtt_user, json["mqtt_user"]);
+          strcpy(mqtt_pass, json["mqtt_pass"]);
+        } else {
+          Serial << F("failed to load json config") << endl;
+        }
+
+        configFile.close();
+      }
+    }
+  } else {
+    Serial << F("failed to mount FS") << endl;
+  }
 
   { // start bme init
     Wire.begin();
@@ -118,12 +230,34 @@ void setup() {
     scd2.setBrightness(BRIGHTNESS);
     scd2.writeLine((char*) " SCD5583");
 
+    // The extra parameters to be configured (can be either global or just in the setup)
+    // After connecting, parameter.getValue() will get you the configured value
+    // id/name placeholder/prompt default length
+    WiFiManagerParameter custom_mqtt_server("server", "mqtt server", mqtt_server, 40);
+    WiFiManagerParameter custom_mqtt_port("port", "mqtt port", mqtt_port, 6);
+    WiFiManagerParameter custom_mqtt_user("user", "mqtt user", mqtt_user, 20);
+    WiFiManagerParameter custom_mqtt_pass("pass", "mqtt pass", mqtt_pass, 20);
+
     //WiFiManager
     //Local intialization. Once its business is done, there is no need to keep it around
     WiFiManager wifiManager;
 
-    //reset settings - for testing
-    //wifiManager.resetSettings();
+    //set config save notify callback
+    wifiManager.setSaveConfigCallback(saveConfigCallback);
+
+    //add all your parameters here
+    wifiManager.addParameter(&custom_mqtt_server);
+    wifiManager.addParameter(&custom_mqtt_port);
+    wifiManager.addParameter(&custom_mqtt_user);
+    wifiManager.addParameter(&custom_mqtt_pass);
+  
+    /*{
+      //reset settings - for testing
+      wifiManager.resetSettings();
+      ESP.eraseConfig();
+    } */
+
+    wifiManager.setTimeout(300);
 
     //fetches ssid and pass from eeprom and tries to connect
     //if it does not connect it starts an access point with the specified name
@@ -131,6 +265,51 @@ void setup() {
     //and goes into a blocking loop awaiting configuration
     wifiManager.autoConnect("SCD5583");
     //or use this for auto generated name ESP + ChipID
+
+    //read updated parameters
+    strncpy(mqtt_server, custom_mqtt_server.getValue(), sizeof(mqtt_server) - 1);
+    strncpy(mqtt_port, custom_mqtt_port.getValue(), sizeof(mqtt_port) - 1);
+    strncpy(mqtt_user, custom_mqtt_user.getValue(), sizeof(mqtt_user) - 1);
+    strncpy(mqtt_pass, custom_mqtt_pass.getValue(), sizeof(mqtt_pass) - 1);
+  
+    Serial << F("The values in the file are: ") << endl;
+    Serial << F("\tmqtt_server : [") << String(mqtt_server) << F("]") << endl;
+    Serial << F("\tmqtt_port   : [") << String(mqtt_port) << F("]") << endl;
+    Serial << F("\tmqtt_user   : [") << String(mqtt_user) << F("]") << endl;
+    Serial << F("\tmqtt_pass   : [") << String(mqtt_pass) << F("]") << endl;    
+
+    //save the custom parameters to FS
+    if (shouldSaveConfig) {
+      Serial << F("saving config") << endl;
+
+#if ARDUINOJSON_VERSION_MAJOR >= 6
+      DynamicJsonDocument json(1024);
+#else
+      DynamicJsonBuffer jsonBuffer;
+      JsonObject& json = jsonBuffer.createObject();
+#endif
+
+      json["mqtt_server"] = mqtt_server;
+      json["mqtt_port"] = mqtt_port;
+      json["mqtt_user"] = mqtt_user;
+      json["mqtt_pass"] = mqtt_pass;
+
+      File configFile = FileFS.open(configFileName, "w");
+    
+      if (!configFile) {
+        Serial << F("failed to open config file for writing") << endl;
+    }
+
+#if ARDUINOJSON_VERSION_MAJOR >= 6
+      serializeJson(json, Serial);
+      serializeJson(json, configFile);
+#else
+      json.printTo(Serial);
+      json.printTo(configFile);
+#endif
+      configFile.close();
+      //end save
+    }
 
     SCD5583_fadeout(scd1, 2000);
     SCD5583_fadeout(scd2, 2000);
@@ -146,6 +325,8 @@ void setup() {
 
     scd1.setBrightness(BRIGHTNESS);
     scd2.setBrightness(BRIGHTNESS);
+
+    WiFi.mode(WIFI_STA);
   }
 
   bool timeSync = getNtpServer();
@@ -158,13 +339,45 @@ void setup() {
 
   scd1.setBrightness(BRIGHTNESS);
   scd2.setBrightness(BRIGHTNESS);
+
+  { // start HomeAssistant init
+    sprintf(device_name, "SCD5583_%d", ESP.getChipId());
+
+    byte mac[WL_MAC_ADDR_LENGTH];
+    WiFi.macAddress(mac);
+
+    device.setName(device_name);
+    device.setUniqueId(mac, sizeof(mac));
+    device.setSoftwareVersion("1.1.0");
+    device.setManufacturer("Morlac");
+    device.setModel("ESP8266 SCD5583-Display");
+
+    HA_Temp.setName("Temperature");
+    HA_Temp.setUnitOfMeasurement("°C");
+    HA_Temp.setDeviceClass("temperature");
+
+    HA_Humidity.setName("Humidity");
+    HA_Humidity.setUnitOfMeasurement("% rH");
+    HA_Humidity.setDeviceClass("humidity");
+
+    HA_Pressure.setName("Pressure");
+    HA_Pressure.setUnitOfMeasurement("Pa");
+    HA_Pressure.setDeviceClass("pressure");
+    
+    device.enableLastWill();
+    
+    mqtt.onConnected(onMqttConnected);
+    // TODO: setup onMessage();
+
+    mqtt.begin(mqtt_server, atoi(mqtt_port), mqtt_user, mqtt_pass);
+  }
 }
 
 /**
  * 
  */
 void new_loop(void) {
-  char display_buf[9];
+  char display_buf[9] = {0};
 
   static time_t lastsec {0};
   time_t now = time(&now);
@@ -172,13 +385,15 @@ void new_loop(void) {
   localtime_r(&now, &tm);
 
   if (tm.tm_sec != lastsec) {
+    mqtt.loop();
+
     int32_t temperature = bme.readFixedTempC();
     uint32_t humidity = bme.readFixedHumidity();
     uint32_t barometric_pressure = bme.readFixedPressure();
 
-    Serial << "T: [" << temperature << "] " << (temperature / 100) << "." << (temperature % 100) / 10 << endl;
-    Serial << "H: [" << humidity << "] " << (humidity / 1000) << "." << (humidity % 1000) / 100 << endl;
-    Serial << "P: [" << barometric_pressure << " Pa]" << endl; 
+    Serial << F("T: [") << temperature << F("] [") << (temperature / 100) << "." << (temperature % 100) / 10 << F("]") << endl;
+    Serial << F("H: [") << humidity    << F("] [") << (humidity / 1000) << "." << (humidity % 1000) / 100 << F("]") << endl;
+    Serial << F("P: [") << barometric_pressure << " Pa]" << endl; 
   
     lastsec = tm.tm_sec;
 
@@ -201,6 +416,14 @@ void new_loop(void) {
       snprintf(display_buf, sizeof(display_buf), "%5d Pa", barometric_pressure);
     } else if ((secs >= 45) && (secs <= 59)) {
       snprintf(display_buf, sizeof(display_buf), "%02d.%02d.%02d", tm.tm_mday, tm.tm_mon + 1, tm.tm_year % 100);
+    }
+
+    if (tm.tm_sec == 0) {
+      Serial << F("sending data via MQTT") << endl;
+
+      HA_Temp.setValue((temperature / 100.0f), true);
+      HA_Humidity.setValue(humidity / 1000.0f, true);
+      HA_Pressure.setValue(barometric_pressure, true);
     }
 
     scd2.writeLine(display_buf);
